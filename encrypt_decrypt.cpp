@@ -6,18 +6,37 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <algorithm> // for std::fill
+#include <cstring>   // for std::strlen
 
+// Include the filesystem library with a fallback for different environments
+#if __has_include(<filesystem>)
+#include <filesystem>
+namespace fs = std::__fs::filesystem;
+#elif __has_include(<experimental/filesystem>)
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
+#elif __has_include(<__fs::filesystem>)
+#include <__fs::filesystem>
+namespace fs = std::__fs::filesystem;
+#else
+#error "No filesystem support"
+#endif
+
+// Handle OpenSSL errors by printing them to stderr and aborting the program
 void handleErrors(void)
 {
     ERR_print_errors_fp(stderr);
     abort();
 }
 
+// Derive a key from the password and salt using PBKDF2 with HMAC-SHA-256
 std::vector<unsigned char> deriveKey(const std::string &password, const std::vector<unsigned char> &salt)
 {
     const int key_length = 32; // 256 bits for AES-256
     std::vector<unsigned char> key(key_length);
 
+    // Generate key using PBKDF2 with HMAC-SHA-256
     if (!PKCS5_PBKDF2_HMAC(password.c_str(), password.length(), salt.data(), salt.size(), 10000, EVP_sha256(), key_length, key.data()))
     {
         handleErrors();
@@ -26,10 +45,25 @@ std::vector<unsigned char> deriveKey(const std::string &password, const std::vec
     return key;
 }
 
+// Encrypt the file at the given path with the given password
 void encryptFile(const std::string &filePath, const std::string &password)
 {
-    // Generate salt
-    std::vector<unsigned char> salt(16);
+    // Check if the file exists
+    if (!fs::exists(filePath))
+    {
+        std::cerr << "Error: File does not exist: " << filePath << std::endl;
+        return;
+    }
+
+    // Check if the password is empty
+    if (password.empty())
+    {
+        std::cerr << "Error: Password cannot be empty." << std::endl;
+        return;
+    }
+
+    // Generate salt (32 bytes for enhanced security)
+    std::vector<unsigned char> salt(32);
     if (!RAND_bytes(salt.data(), salt.size()))
     {
         handleErrors();
@@ -74,6 +108,7 @@ void encryptFile(const std::string &filePath, const std::string &password)
         return;
     }
 
+    // Read file content into a vector
     std::vector<unsigned char> inputFileData((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
 
@@ -107,11 +142,31 @@ void encryptFile(const std::string &filePath, const std::string &password)
     // Clean up
     EVP_CIPHER_CTX_free(ctx);
 
+    // Clear sensitive data from memory
+    std::fill(key.begin(), key.end(), 0);
+    std::fill(inputFileData.begin(), inputFileData.end(), 0);
+    std::fill(outbuf.begin(), outbuf.end(), 0);
+
     std::cout << "Encryption completed." << std::endl;
 }
 
+// Decrypt the file at the given path with the given password
 void decryptFile(const std::string &filePath, const std::string &password)
 {
+    // Check if the file exists
+    if (!fs::exists(filePath))
+    {
+        std::cerr << "Error: File does not exist: " << filePath << std::endl;
+        return;
+    }
+
+    // Check if the password is empty
+    if (password.empty())
+    {
+        std::cerr << "Error: Password cannot be empty." << std::endl;
+        return;
+    }
+
     // Open the input file in binary mode
     std::ifstream in(filePath, std::ios::binary);
     if (!in)
@@ -121,7 +176,7 @@ void decryptFile(const std::string &filePath, const std::string &password)
     }
 
     // Read salt and IV from the input file
-    std::vector<unsigned char> salt(16);
+    std::vector<unsigned char> salt(32); // Use 32 bytes salt for decryption as well
     in.read((char *)salt.data(), salt.size());
     if (in.gcount() != salt.size())
     {
@@ -193,6 +248,11 @@ void decryptFile(const std::string &filePath, const std::string &password)
     // Clean up
     EVP_CIPHER_CTX_free(ctx);
 
+    // Clear sensitive data from memory
+    std::fill(key.begin(), key.end(), 0);
+    std::fill(encryptedData.begin(), encryptedData.end(), 0);
+    std::fill(outbuf.begin(), outbuf.end(), 0);
+
     std::cout << "Decryption completed." << std::endl;
 }
 
@@ -201,13 +261,16 @@ int main()
     std::string filePath, password;
     char choice;
 
+    // Prompt user for action: encrypt or decrypt
     std::cout << "Enter 'e' to encrypt or 'd' to decrypt: ";
     std::cin >> choice;
     std::cin.ignore(); // Ignore newline character after choice input
 
+    // Prompt user for file path
     std::cout << "Enter the file path: ";
     std::getline(std::cin, filePath);
 
+    // Prompt user for password
     std::cout << "Enter the password: ";
     std::getline(std::cin, password);
 
